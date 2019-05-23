@@ -7,6 +7,7 @@ parser = argparse.ArgumentParser(description='Preprocess fasta_file for Ribo-Seq
 
 parser.add_argument('-u','--up_file', help='<Required> Upstream sequence file.', required=True)
 parser.add_argument('-d','--down_file', help='<Required> Downstream sequence file.', required=True)
+parser.add_argument('-udk','--nt_updown', help='<Required> No of nts in upstream, downstream sequence files.', required=True)
 parser.add_argument('-p','--peptide_file', help='<Required> Peptide sequence file.', required=True)
 parser.add_argument('-o','--out_fasta', help='<Required> Output fasta sequence file.', required=True)
 parser.add_argument('-i','--in_fasta', help='<Required> Input fasta sequence file.', required=True)
@@ -150,7 +151,7 @@ with f_open(args.out_fasta,'w') as out_f:
                             k = str(Seq.translate(full_seq[i:])).find(peptide_seq[1:-1])
                             if k != -1:
                                 print(i,k)
-                                new_cds_start = ((k-1)*3) + i + 1 - 50
+                                new_cds_start = ((k-1)*3) + i + 1 - int(args.nt_updown)
                                 new_cds_end = new_cds_start + cds_length - 1
                                 print(new_cds_start,new_cds_end)
                                 # UPDATE CDSEND
