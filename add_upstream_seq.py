@@ -40,26 +40,29 @@ def align(chaine1, chaine2):
             res+='*'
     return(res)
 
+def get_real_id(pid):
+    return(str(pid).split('.')[0].split('|')[0])
+
 args = parser.parse_args()
 
 # Parse upstream biomart fasta file
 TX_up = {}
 with f_open(args.up_file) as handle:
     for record in SeqIO.parse(handle, "fasta") :
-        # Ensembl transcript IDs are 18characters
-        TX_up[str(record.id)[:18]] = str(record.seq)
+        # Ensembl transcript IDs are 18characters/ not actually, see the change below
+        TX_up[get_real_id(record.id)] = str(record.seq)
 
 TX_down = {}
 with f_open(args.down_file) as handle:
     for record in SeqIO.parse(handle, "fasta") :
         # Ensembl transcript IDs are 18characters
-        TX_down[str(record.id)[:18]] = str(record.seq)
+        TX_down[get_real_id(record.id)] = str(record.seq)
 
 TX_peptide = {}
 with f_open(args.peptide_file) as handle:
     for record in SeqIO.parse(handle, "fasta") :
         # Ensembl transcript IDs are 18characters
-        TX_peptide[str(record.id)[:18]] = str(record.seq)
+        TX_peptide[get_real_id(record.id)] = str(record.seq)
 
 # CODON TABLE
 COD_TO_AA = { # T
@@ -91,6 +94,8 @@ SYM_TO_COD = {sym:[cod for cod,aaa in COD_TO_AA.items() if aaa==aa] for aa,sym i
 
 
 # Parse input fasta that also includes CDS info / write into the output file
+nocds=0
+tooshort=0
 with f_open(args.out_fasta,'w') as out_f:
     with f_open(args.in_fasta) as handle:
         for record in SeqIO.parse(handle, "fasta") :
@@ -101,54 +106,72 @@ with f_open(args.out_fasta,'w') as out_f:
             utr3 = None
             seq = str(record.seq)
             for i in range(len(id_cols)):
-                if id_cols[i].startswith('CDS'):
+                if id_cols[i].startswith('CDS:'):
                     cds = (i,(int(id_cols[i].split(':')[1].split('-')[0]),int(id_cols[i].split(':')[1].split('-')[1])))
-                elif id_cols[i].startswith('UTR5'):
+                elif id_cols[i].startswith('UTR5:'):
                     utr5 = (i,(int(id_cols[i].split(':')[1].split('-')[0]),int(id_cols[i].split(':')[1].split('-')[1])))
-                elif id_cols[i].startswith('UTR3'):
+                elif id_cols[i].startswith('UTR3:'):
                     utr3 = (i,(int(id_cols[i].split(':')[1].split('-')[0]),int(id_cols[i].split(':')[1].split('-')[1])))
 
-            #Ignore transcripts with CDS shorter than 30
-            if cds[1][1]-cds[1][0]>28:
-                # FIRST SOLVE THE FUCKED UP ANNOTATION in terms of CDS peptide identity
-                # complete the cds length to multiple of 3, by adding or removing from downstream
-                while (cds[1][1]-cds[1][0])%3 != 2:
-                    if (1+cds[1][1]-cds[1][0]) < 3*len(TX_peptide[record.id[:18]]):
-                        if utr3 is not None:
-                            cds =  (cds[0], (cds[1][0], cds[1][1]+1))
-                            utr3 = (utr3[0], (cds[1][1]+1, utr3[1][1]))
-                        else:
-                            seq = seq + downstream_seq[0]
-                            downstream_seq = downstream_seq[1:]
-                            TX_down[str(record.id)[:18]] =  downstream_seq
-                            cds =  (cds[0], (cds[1][0], cds[1][1]+1))
-                    else:
-                        if utr3 is not None:
-                            cds =  (cds[0], (cds[1][0], cds[1][1]-1))
-                            utr3 = (utr3[0], (cds[1][1]+1, utr3[1][1]))
-                        else:
-                            downstream_seq = seq[-1] + downstream_seq
-                            TX_down[str(record.id)[:18]] = downstream_seq
-                            seq = seq[:-1]
-                            cds =  (cds[0], (cds[1][0], cds[1][1]-1))
+            print("######",record.id,"below")
+            if cds is None:
+                nocds +=1
+                continue
 
-                # Look into cases where CDS translation and peptide sequence are highly dissimilar
-                if str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])) != TX_peptide[record.id[:18]]:
-                    if hamming_distance(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])), TX_peptide[record.id[:18]]) > (3*len(TX_peptide[record.id[:18]])*0.1):
-                        print(record.id)
-                        print(utr5,cds,utr3)
-                        upstream_seq = TX_up[str(record.id)[:18]]
-                        downstream_seq = TX_down[str(record.id)[:18]]
-                        full_seq = upstream_seq+seq+downstream_seq
-                        peptide_seq = TX_peptide[str(record.id)[:18]]
-                        cds_length = 3*len(peptide_seq)
+            #Ignore transcripts with CDS shorter than 30
+            if cds[1][1]-cds[1][0]<28:
+                tooshort+=1
+                continue
+
+            # FIRST SOLVE THE FUCKED UP ANNOTATION in terms of CDS peptide identity
+            # complete the cds length to multiple of 3, by adding or removing from downstream
+            while (cds[1][1]-cds[1][0])%3 != 2:
+                if (1+cds[1][1]-cds[1][0]) < 3*len(TX_peptide[get_real_id(record.id)]):
+                    if utr3 is not None:
+                        cds =  (cds[0], (cds[1][0], cds[1][1]+1))
+                        utr3 = (utr3[0], (cds[1][1]+1, utr3[1][1]))
+                    else:
+                        seq = seq + downstream_seq[0]
+                        downstream_seq = downstream_seq[1:]
+                        TX_down[get_real_id(record.id)] =  downstream_seq
+                        cds =  (cds[0], (cds[1][0], cds[1][1]+1))
+                else:
+                    if utr3 is not None:
+                        cds =  (cds[0], (cds[1][0], cds[1][1]-1))
+                        utr3 = (utr3[0], (cds[1][1]+1, utr3[1][1]))
+                    else:
+                        downstream_seq = seq[-1] + downstream_seq
+                        TX_down[get_real_id(record.id)] = downstream_seq
+                        seq = seq[:-1]
+                        cds =  (cds[0], (cds[1][0], cds[1][1]-1))
+
+            # Look into cases where CDS translation and peptide sequence are highly dissimilar
+            if str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])) != TX_peptide[get_real_id(record.id)]:
+                if hamming_distance(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])), TX_peptide[get_real_id(record.id)]) > (3*len(TX_peptide[get_real_id(record.id)])*0.1):
+                    print(record.id)
+                    print(utr5,cds,utr3)
+                    upstream_seq = TX_up[get_real_id(record.id)]
+                    downstream_seq = TX_down[get_real_id(record.id)]
+                    full_seq = upstream_seq+seq+downstream_seq
+                    peptide_seq = TX_peptide[get_real_id(record.id)]
+                    cds_length = 3*len(peptide_seq)
+
+                    ###
+                    peptide_check_end = len(peptide_seq)-1 
+                    while peptide_check_end > 5: 
                         # i is the number of nts we remove at 5'end each step
                         for i in range(4):
                             if i==3:
+                                print(record.id)
+                                print("UP", upstream_seq)
+                                print("DOWN", downstream_seq)
+                                print("SEQ", seq)
+                                print("k", str(Seq.translate(full_seq[i:])).find(peptide_seq[1:peptide_check_end]))
+                                print("peptide_check_end", peptide_check_end)
                                 print("PROBLEM of not being able to find where CDS start")
-                                exit(0)
+                                peptide_check_end -= 5
 
-                            k = str(Seq.translate(full_seq[i:])).find(peptide_seq[1:-1])
+                            k = str(Seq.translate(full_seq[i:])).find(peptide_seq[1:peptide_check_end])
                             if k != -1:
                                 print(i,k)
                                 new_cds_start = ((k-1)*3) + i + 1 - int(args.nt_updown)
@@ -163,7 +186,7 @@ with f_open(args.out_fasta,'w') as out_f:
                                         diff = new_cds_end - cds[1][1]
                                         seq = seq + downstream_seq[:diff]
                                         downstream_seq = downstream_seq[diff:]
-                                        TX_down[str(record.id)[:18]] =  downstream_seq
+                                        TX_down[get_real_id(record.id)] =  downstream_seq
                                         cds =  (cds[0], (cds[1][0], new_cds_end))
                                 elif cds[1][1] > new_cds_end:
                                     if utr3 is not None:
@@ -172,7 +195,7 @@ with f_open(args.out_fasta,'w') as out_f:
                                     else:
                                         diff = cds[1][1] - new_cds_end
                                         downstream_seq = seq[-diff:] + downstream_seq
-                                        TX_down[str(record.id)[:18]] =  downstream_seq
+                                        TX_down[get_real_id(record.id)] =  downstream_seq
                                         seq = seq[:-diff]
                                         cds =  (cds[0], (cds[1][0], new_cds_end))
                                 # UPDATE CDSSTART
@@ -184,7 +207,7 @@ with f_open(args.out_fasta,'w') as out_f:
                                         diff = cds[1][0] - new_cds_start
                                         seq = upstream_seq[-diff:] + seq
                                         upstream_seq = upstream_seq[:-diff]
-                                        TX_up[str(record.id)[:18]] = upstream_seq
+                                        TX_up[get_real_id(record.id)] = upstream_seq
                                         cds = (cds[0], (1, cds[1][1]+diff))
                                         if utr3 is not None:
                                             utr3 = (utr3[0], (utr3[1][0]+diff, utr3[1][1]+diff))
@@ -195,7 +218,7 @@ with f_open(args.out_fasta,'w') as out_f:
                                     else:
                                         diff = new_cds_start - cds[1][0]
                                         upstream_seq = upstream_seq + seq[:diff]
-                                        TX_up[str(record.id)[:18]] = upstream_seq
+                                        TX_up[get_real_id(record.id)] = upstream_seq
                                         seq = seq[diff:]
                                         cds = (cds[0], (1, cds[1][1]-diff))
                                         if utr3 is not None:
@@ -207,90 +230,96 @@ with f_open(args.out_fasta,'w') as out_f:
                                 if utr3 is not None:
                                     id_cols[utr3[0]] = 'UTR3:'+str(utr3[1][0])+'-'+str(utr3[1][1])
 
+                                peptide_check_end = -100
                                 break
                         print(utr5,cds,utr3,'new')
 
-                # ASSERT CDS TRANSLATION == PEPTIDE
-                if str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])) != TX_peptide[record.id[:18]]:
-                    if hamming_distance(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])), TX_peptide[record.id[:18]]) > (3*len(TX_peptide[record.id[:18]])*0.1):
-                        print(record.id)
-                        print(len(seq))
-                        print(TX_peptide[record.id[:18]][:10])
-                        print(str(seq[cds[1][0]-1:cds[1][1]])[:30])
-                        print(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]]))[:10])
-                        print("############### PEP #################")
-                        print(len(TX_peptide[record.id[:18]]),3*len(TX_peptide[record.id[:18]]))
-                        print(TX_peptide[record.id[:18]])
-                        print("############### TRANSLATE #################")
-                        print(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])))
-                        print("############### ALIGN #################")
-                        print(align(TX_peptide[record.id[:18]],str(Seq.translate(seq[cds[1][0]-1:cds[1][1]]))))
-
+                    if peptide_check_end<=5 and peptide_check_end!=-100:
+                        print("peptide_check_end error")
                         exit(0)
 
-
-                ### DO the actual completion ###
-                if len(id_cols) > 7 and ((args.include_labels==None) or (id_cols[7] in args.include_labels)) and ((args.exclude_labels==None) or (id_cols[7] not in args.exclude_labels)):
-                    up = False
-                    add = 0
-
-                    if cds[1][0]<(int(args.k)+1):
-                        add = (int(args.k)+1)-cds[1][0]
-                        upstream_seq = TX_up[str(record.id)[:18]]
-                        if utr3!=None:
-                            utr3 = (utr3[0], ((utr3[1][0]+add),(utr3[1][1]+add)))
-                        if cds!=None:
-                            cds = (cds[0], ((int(args.k)+1), (cds[1][1]+add)))
-                        if utr5!=None:
-                            utr5 = (utr5[0],(1,int(args.k)))
-                        else:
-                            # update id_cols & cds & utr5 & utr3
-                            id_cols = id_cols[:cds[0]]+['UTR5:1-'+args.k]+id_cols[cds[0]:]
-                            utr5 = (cds[0], (1,int(args.k)))
-                            cds = (cds[0]+1, cds[1])
-                            if utr3!=None: # only the position in id_cols
-                                utr3 = (utr3[0]+1, utr3[1])
-
-                        if id_cols[-1] == '':
-                            id_cols[-1] = 'up'+str(add)
-                        else:
-                            id_cols.append = 'up'+str(add)
-
-                        seq = upstream_seq[-add:] + seq
-                        up = True
-
-                    if (len(seq)-cds[1][1]) < int(args.k):
-                        downstream_seq = TX_down[str(record.id)[:18]]
-                        add = (int(args.k)-(len(seq)-cds[1][1]))
-                        if utr3!=None:
-                            if cds[1][1]+1 != utr3[1][0]:
-                                print('PROBLEM !!!')
-                                print(record.id)
-                                print(utr5,cds,utr3)
-                                exit()
-                            utr3 = (utr3[0],(utr3[1][0], utr3[1][0]+(int(args.k)-1)))
-                        else:
-                            id_cols = id_cols[:(cds[0]+1)]+['UTR3:'+str(cds[1][1]+1)+'-'+str(cds[1][1]+int(args.k))]+ id_cols[(cds[0]+1):]
-                            utr3 = (cds[0]+1, (cds[1][1]+1, cds[1][1]+int(args.k)))
-
-                        seq = seq + downstream_seq[:add]
-                        if up:
-                            id_cols[-1] += 'down'+str(add)
-                        elif id_cols[-1] == '':
-                            id_cols[-1] = 'down'+str(add)
-                        else:
-                            id_cols.append = 'down'+str(add)
-
-                    # update id_cols with updated cds utr5 and utr3
-                    id_cols[cds[0]] = 'CDS:'+str(cds[1][0])+'-'+str(cds[1][1])
-                    if utr5 is not None:
-                        id_cols[utr5[0]] = 'UTR5:'+str(utr5[1][0])+'-'+str(utr5[1][1])
-                    if utr3 is not None:
-                        id_cols[utr3[0]] = 'UTR3:'+str(utr3[1][0])+'-'+str(utr3[1][1])
-
-                    out_f.write('>'+str('|'.join(id_cols))+'|\n'+seq+'\n')
-
-                else:
-                    print('PROBLEM !!!')
+            # ASSERT CDS TRANSLATION == PEPTIDE
+            if str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])) != TX_peptide[get_real_id(record.id)]:
+                if hamming_distance(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])), TX_peptide[get_real_id(record.id)]) > (3*len(TX_peptide[get_real_id(record.id)])*0.1):
                     print(record.id)
-                    exit()
+                    print(len(seq))
+                    print(TX_peptide[get_real_id(record.id)][:10])
+                    print(str(seq[cds[1][0]-1:cds[1][1]])[:30])
+                    print(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]]))[:10])
+                    print("############### PEP #################")
+                    print(len(TX_peptide[get_real_id(record.id)]),3*len(TX_peptide[get_real_id(record.id)]))
+                    print(TX_peptide[get_real_id(record.id)])
+                    print("############### TRANSLATE #################")
+                    print(str(Seq.translate(seq[cds[1][0]-1:cds[1][1]])))
+                    print("############### ALIGN #################")
+                    print(align(TX_peptide[get_real_id(record.id)],str(Seq.translate(seq[cds[1][0]-1:cds[1][1]]))))
+
+                    exit(0)
+
+
+            ### DO the actual completion ###
+            if len(id_cols) > 7 and ((args.include_labels==None) or (id_cols[7] in args.include_labels)) and ((args.exclude_labels==None) or (id_cols[7] not in args.exclude_labels)):
+                up = False
+                add = 0
+
+                if cds[1][0]<(int(args.k)+1):
+                    add = (int(args.k)+1)-cds[1][0]
+                    upstream_seq = TX_up[get_real_id(record.id)]
+                    if utr3!=None:
+                        utr3 = (utr3[0], ((utr3[1][0]+add),(utr3[1][1]+add)))
+                    if cds!=None:
+                        cds = (cds[0], ((int(args.k)+1), (cds[1][1]+add)))
+                    if utr5!=None:
+                        utr5 = (utr5[0],(1,int(args.k)))
+                    else:
+                        # update id_cols & cds & utr5 & utr3
+                        id_cols = id_cols[:cds[0]]+['UTR5:1-'+args.k]+id_cols[cds[0]:]
+                        utr5 = (cds[0], (1,int(args.k)))
+                        cds = (cds[0]+1, cds[1])
+                        if utr3!=None: # only the position in id_cols
+                            utr3 = (utr3[0]+1, utr3[1])
+
+                    if id_cols[-1] == '':
+                        id_cols[-1] = 'up'+str(add)
+                    else:
+                        id_cols.append = 'up'+str(add)
+
+                    seq = upstream_seq[-add:] + seq
+                    up = True
+
+                if (len(seq)-cds[1][1]) < int(args.k):
+                    downstream_seq = TX_down[get_real_id(record.id)]
+                    add = (int(args.k)-(len(seq)-cds[1][1]))
+                    if utr3!=None:
+                        if cds[1][1]+1 != utr3[1][0]:
+                            print('PROBLEM !!!')
+                            print(record.id)
+                            print(utr5,cds,utr3)
+                            exit()
+                        utr3 = (utr3[0],(utr3[1][0], utr3[1][0]+(int(args.k)-1)))
+                    else:
+                        id_cols = id_cols[:(cds[0]+1)]+['UTR3:'+str(cds[1][1]+1)+'-'+str(cds[1][1]+int(args.k))]+ id_cols[(cds[0]+1):]
+                        utr3 = (cds[0]+1, (cds[1][1]+1, cds[1][1]+int(args.k)))
+
+                    seq = seq + downstream_seq[:add]
+                    if up:
+                        id_cols[-1] += 'down'+str(add)
+                    elif id_cols[-1] == '':
+                        id_cols[-1] = 'down'+str(add)
+                    else:
+                        id_cols.append = 'down'+str(add)
+
+                # update id_cols with updated cds utr5 and utr3
+                id_cols[cds[0]] = 'CDS:'+str(cds[1][0])+'-'+str(cds[1][1])
+                if utr5 is not None:
+                    id_cols[utr5[0]] = 'UTR5:'+str(utr5[1][0])+'-'+str(utr5[1][1])
+                if utr3 is not None:
+                    id_cols[utr3[0]] = 'UTR3:'+str(utr3[1][0])+'-'+str(utr3[1][1])
+
+                out_f.write('>'+str('|'.join(id_cols))+'|\n'+seq+'\n')
+
+            else:
+                print('PROBLEM !!!')
+                print(record.id)
+                exit()
+        print("nocds",nocds,"tooshort",tooshort)
